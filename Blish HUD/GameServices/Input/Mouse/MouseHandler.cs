@@ -1,9 +1,11 @@
 ﻿using System;
+using System.IO;
 using System.Windows.Forms;
 using Blish_HUD.Controls;
 using Blish_HUD.Input.WinApi;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Input;
+using ButtonState = Microsoft.Xna.Framework.Input.ButtonState;
 using Control = Blish_HUD.Controls.Control;
 
 namespace Blish_HUD.Input {
@@ -16,6 +18,17 @@ namespace Blish_HUD.Input {
         /// The current position of the mouse relative to the application.
         /// </summary>
         public Point Position => this.State.Position;
+
+        public MouseState StaticMouseState { get; set; } = new MouseState(
+                                        0,
+                                        0,
+                                        0,
+                                        ButtonState.Released,
+                                        ButtonState.Released,
+                                        ButtonState.Released,
+                                        ButtonState.Released,
+                                        ButtonState.Released 
+                                    );
 
         public Point PositionRaw { get; private set; }
 
@@ -140,7 +153,7 @@ namespace Blish_HUD.Input {
 
             var prevMouseState = this.State;
 
-            var rawMouseState = Mouse.GetState();
+            var rawMouseState = this.StaticMouseState;
 
             this.State = new MouseState((int) (rawMouseState.X / GameService.Graphics.UIScaleMultiplier),
                                         (int) (rawMouseState.Y / GameService.Graphics.UIScaleMultiplier),

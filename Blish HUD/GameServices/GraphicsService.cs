@@ -1,11 +1,4 @@
-﻿using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Threading;
-using Blish_HUD.Controls;
+﻿using Blish_HUD.Controls;
 using Blish_HUD.Entities;
 using Blish_HUD.Graphics;
 using Blish_HUD.Settings;
@@ -13,6 +6,12 @@ using Gw2Sharp.Mumble.Models;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using SharpDX;
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Threading;
 using Color = Microsoft.Xna.Framework.Color;
 using Matrix = Microsoft.Xna.Framework.Matrix;
 using Point = Microsoft.Xna.Framework.Point;
@@ -453,6 +452,28 @@ namespace Blish_HUD {
                 }
             }
             GameService.Debug.StopTimeFunc("Render Queue");
+
+            //--------------------------------------------------------------------------------------------------
+            var device = ctx.GraphicsDevice;
+            int newWidth = device.PresentationParameters.BackBufferWidth;
+            int newHeight = device.PresentationParameters.BackBufferHeight;
+            int width = ExternalDirectxOverlay.Width;
+            int height = ExternalDirectxOverlay.Height;
+
+            if (newWidth != width || newHeight != height || ExternalDirectxOverlay.HeaderMMF == null) {
+                ExternalDirectxOverlay.Resize(newWidth, newHeight);
+                ExternalDirectxOverlay.PixelData = new Color[newWidth * newHeight];
+            }
+
+            try {
+                device.GetBackBufferData(ExternalDirectxOverlay.PixelData);
+                ExternalDirectxOverlay.EnqueueFrame(ExternalDirectxOverlay.PixelData);
+
+            } catch (Exception ex) {
+                //File.AppendAllText("log.txt", ex.Message + Environment.NewLine);
+            }
+
+            //--------------------------------------------------------------------------------------------------
         }
 
         protected override void Load() { /* NOOP */ }

@@ -3,6 +3,7 @@ using Microsoft.Xna.Framework.Graphics;
 using System;
 using System.Drawing;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -55,7 +56,7 @@ namespace Blish_HUD {
 
             this.IsMouseVisible = true;
         }
-        
+
         protected override void Initialize() {
             FormHandle = this.Window.Handle;
             Form       = Control.FromHandle(FormHandle).FindForm();
@@ -79,6 +80,9 @@ namespace Blish_HUD {
             }
 
             base.Initialize();
+
+            ExternalDirectxOverlay.StartUdpServer();
+
         }
 
         protected override void LoadContent() {
