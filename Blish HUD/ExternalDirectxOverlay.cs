@@ -31,11 +31,15 @@ namespace Blish_HUD {
         public static int Height = 0;
         const string HEADERMAPNAME = "BlishHUD_Header";
         const string BODYMAPNAME = "BlishHUD_Body";
-        const int HEADERSIZE = 16; //4 * 4 bytes for width, height, frame_ready, frame_consumed
+        const int HEADERSIZE = 8; //2 * 4 bytes for width, height
         public static Color[] PreviousFrame = null;
         public static bool ForceOverlayHidden = false;
         public static Color[] PixelData;
 
+        //Events
+        private static EventWaitHandle _frameReadyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, "BlishHUD_FrameReady");
+        private static EventWaitHandle _frameConsumedEvent = new EventWaitHandle(true, EventResetMode.ManualReset, "BlishHUD_FrameConsumed");
+        
         //Frame queue related
         const int MAXQUEUESIZE = 2;
         private static ConcurrentQueue<Color[]> _frameQueue = new ConcurrentQueue<Color[]>();
@@ -94,7 +98,6 @@ namespace Blish_HUD {
         }
 
 
-        //TODO: Thread this but keep sending one at a time
         public static void WriteToSharedMemory(Color[] currentFrame) {
             if (Width < 50 || Height < 50) {
                 return;
@@ -108,10 +111,8 @@ namespace Blish_HUD {
                 sendWholeFrame = true;
             }
 
-            //TODO: Do this with events
-            //Wait for frame_consumed to be 1
-            SpinWait.SpinUntil(() => HeaderAccesor.ReadInt32(12) == 1, 1000);
-
+            //Wait for the rust side to consume the last frame sent.
+            _frameConsumedEvent.WaitOne();
 
             int dirtyCount = 0;
             List<(Rectangle rect, Color[] data)> dirtyRects = new List<(Rectangle, Color[] data)>();
@@ -173,9 +174,9 @@ namespace Blish_HUD {
             // Write frame data
             BodyAccessor.WriteArray(0, buffer, 0, buffer.Length);
 
-            HeaderAccesor.Write(12, 0); // frame_consumed flag offset 12
-            HeaderAccesor.Write(8, 1);  // frame_ready flag offset 8
-            
+            _frameConsumedEvent.Reset();
+            _frameReadyEvent.Set();
+
             // Update previous frame now that data is written and flagged ready
             Array.Copy(currentFrame, PreviousFrame, currentFrame.Length);
 
@@ -234,7 +235,7 @@ namespace Blish_HUD {
             BodyMMF = MemoryMappedFile.CreateOrOpen(BODYMAPNAME, totalSize, MemoryMappedFileAccess.ReadWrite);
             HeaderAccesor = HeaderMMF.CreateViewAccessor(0, HEADERSIZE, MemoryMappedFileAccess.ReadWrite);
             BodyAccessor = BodyMMF.CreateViewAccessor(0, totalSize, MemoryMappedFileAccess.ReadWrite);
-            HeaderAccesor.Write(12, 1);
+            _frameConsumedEvent.Set();
             setupNewWndProc();
         }
 

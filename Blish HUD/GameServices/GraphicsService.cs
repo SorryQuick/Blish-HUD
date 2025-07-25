@@ -468,7 +468,7 @@ namespace Blish_HUD {
             try {
                 device.GetBackBufferData(ExternalDirectxOverlay.PixelData);
                 ExternalDirectxOverlay.EnqueueFrame(ExternalDirectxOverlay.PixelData);
-
+                
             } catch (Exception ex) {
                 //File.AppendAllText("log.txt", ex.Message + Environment.NewLine);
             }
