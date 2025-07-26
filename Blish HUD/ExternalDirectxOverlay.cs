@@ -2,16 +2,20 @@
 using Blish_HUD.Input;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Input;
+using SharpDX.Direct3D9;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.MemoryMappedFiles;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using MouseEventArgs = Blish_HUD.Input.MouseEventArgs;
 
@@ -34,187 +38,82 @@ namespace Blish_HUD {
         const int HEADERSIZE = 8; //2 * 4 bytes for width, height
         public static Color[] PreviousFrame = null;
         public static bool ForceOverlayHidden = false;
+
+        //Just used as a buffer to receive data from GetBackBufferData. It's here to keep globals in this one file.
         public static Color[] PixelData;
 
         //Events
         private static EventWaitHandle _frameReadyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, "BlishHUD_FrameReady");
         private static EventWaitHandle _frameConsumedEvent = new EventWaitHandle(true, EventResetMode.ManualReset, "BlishHUD_FrameConsumed");
-        
-        //Frame queue related
-        const int MAXQUEUESIZE = 2;
-        private static ConcurrentQueue<Color[]> _frameQueue = new ConcurrentQueue<Color[]>();
-        private static AutoResetEvent _frameAvailable = new AutoResetEvent(false);
-        private static volatile bool _workerRunning = false;
-        private static Thread _workerThread;
 
         /*
-            Header : [ width (u32) | height (u32) | frame_ready (u32) | frame_consumed (u32) ]
-            Body: { 
-                [ rect count (4 bytes) ]
-                [ rects (N * 16 bytes) ]
-                [ pixel data for each rect (N * w * h * 4 bytes) ]
-            }
+            Header : [ width (u32) | height (u32)]
+            Body: [ Full Frame ]
          */
 
-
-
-        public static void EnqueueFrame(Color[] pixelData) {
-            if (!_workerRunning) {
-                StartWorker();
-            }
-            var copy = new Color[pixelData.Length];
-            Array.Copy(pixelData, copy, pixelData.Length);
-
-            //Drop oldest frames if queue is too large
-            while (_frameQueue.Count >= MAXQUEUESIZE) {
-                _frameQueue.TryDequeue(out _); //Discard
-            }
-
-            _frameQueue.Enqueue(copy);
-            _frameAvailable.Set();
-        }
-
-        private static void FrameProcessingLoop() {
-            while (_workerRunning) {
-                if (_frameQueue.TryDequeue(out var frame)) {
+        private static readonly object _writeLock = new object();
+        public static void ProcessFrame(Color[] frame) {
+            Task.Run(() => {
+                lock (_writeLock) { 
                     WriteToSharedMemory(frame);
-                } else {
-                    _frameAvailable.WaitOne(5000);
                 }
-            }
+            });
         }
-
-        public static void StartWorker() {
-            if (_workerRunning) return;
-            _workerRunning = true;
-            _workerThread = new Thread(FrameProcessingLoop) { IsBackground = true };
-            _workerThread.Start();
-        }
-
-        public static void StopWorker() {
-            _workerRunning = false;
-            _frameAvailable.Set();
-            _workerThread?.Join();
-        }
-
 
         public static void WriteToSharedMemory(Color[] currentFrame) {
             if (Width < 50 || Height < 50) {
                 return;
             }
 
-            bool sendWholeFrame = false;
-
             if (PreviousFrame == null || PreviousFrame.Length != currentFrame.Length) {
                 PreviousFrame = new Color[currentFrame.Length];
-                Array.Copy(currentFrame, PreviousFrame, currentFrame.Length);
-                sendWholeFrame = true;
+                PreviousFrame = currentFrame;
             }
+
 
             //Wait for the rust side to consume the last frame sent.
             _frameConsumedEvent.WaitOne();
-
-            int dirtyCount = 0;
-            List<(Rectangle rect, Color[] data)> dirtyRects = new List<(Rectangle, Color[] data)>();
-
-            if (!sendWholeFrame) {
-                mergeRectangles(ref dirtyRects, currentFrame, ref dirtyCount);
-            } else {
-                dirtyRects.Add((new Rectangle(0, 0, Width, Height), currentFrame));
-                dirtyCount = 1;
-            }
-
-            if (dirtyCount == 0) {
-                Array.Copy(currentFrame, PreviousFrame, currentFrame.Length);
-                return;
-            }
-
-            // Calculate needed buffer size for dirty rects data
-            int frameSize = 4; // dirty rect count
-            foreach (var (rect, pixels) in dirtyRects) {
-                frameSize += 4 * 4;           // X, Y, Width, Height (4 ints)
-                frameSize += pixels.Length * 4; // RGBA pixels
-            }
-
-            byte[] buffer = new byte[frameSize];
-            int offset = 0;
-
-            // Write dirty rect count
-            BitConverter.GetBytes(dirtyRects.Count).CopyTo(buffer, offset);
-            offset += 4;
-
-            // Write dirty rects and pixel data
-            foreach (var (rect, pixels) in dirtyRects) { 
-                unsafe {
-                    fixed (byte* pBuffer = buffer) {
-                        int* ptr = (int*)(pBuffer + offset);
-                        *ptr = rect.X;
-                        ptr++;
-                        *ptr = rect.Y;
-                        ptr++;
-                        *ptr = rect.Width;
-                        ptr++;
-                        *ptr = rect.Height;
-                        offset += 16;
-                    }
-                }
-                foreach (var pixel in pixels) {
-                    buffer[offset++] = pixel.R;
-                    buffer[offset++] = pixel.G;
-                    buffer[offset++] = pixel.B;
-                    buffer[offset++] = pixel.A;
-                }
-            }
 
 
             // Write width, height
             HeaderAccesor.Write(0, Width);
             HeaderAccesor.Write(4, Height);
 
-            // Write frame data
-            BodyAccessor.WriteArray(0, buffer, 0, buffer.Length);
+            byte[] bytes = ColorArrayToRgbaBytes(currentFrame); 
 
+            // Write frame data
+            BodyAccessor.WriteArray(0, bytes, 0, bytes.Length);
+
+            // Notify the rust DLL that a new frame is ready
             _frameConsumedEvent.Reset();
             _frameReadyEvent.Set();
 
-            // Update previous frame now that data is written and flagged ready
-            Array.Copy(currentFrame, PreviousFrame, currentFrame.Length);
+            // Update previous frame
+            PreviousFrame = currentFrame;
 
         }
 
-        //TODO: For now, this literally just creates one rectangle that covers all the changes.
-        //Eventually, this would create more and only send the regions that actually changed.
-        private static void mergeRectangles(ref List<(Rectangle, Color[] data)> rects, Color[] currentFrame, ref int dirtyCount) {
-            int minX = Width, minY = Height, maxX = 0, maxY = 0;
-            bool found = false;
 
-            for (int y = 0; y < Height; y++) {
-                for (int x = 0; x < Width; x++) {
-                    int i = y * Width + x;
-                    if (currentFrame[i].PackedValue != PreviousFrame[i].PackedValue) {
-                        found = true;
-                        if (x < minX) minX = x;
-                        if (x > maxX) maxX = x;
-                        if (y < minY) minY = y;
-                        if (y > maxY) maxY = y;
-                    }
-                }
+        //TODO: Evaluate if it's worth comparing frames and only sending the new frame if it's different.
+        //TODO: If so, use SMID (Vector<T>.EqualsAll).
+        /*private static bool FramesAreTheSame(Color[] a, Color[] b) {
+            if (!Vector.IsHardwareAccelerated) {
+                return a.SequenceEqual(b);
             }
+            return true;
+        }*/
 
-            if (!found) return;
 
-            int rectWidth = maxX - minX + 1;
-            int rectHeight = maxY - minY + 1;
-
-            var pixels = new Color[rectWidth * rectHeight];
-
-            for (int y = 0; y < rectHeight; y++) {
-                int srcIndex = (minY + y) * Width + minX;
-                Array.Copy(currentFrame, srcIndex, pixels, y * rectWidth, rectWidth);
+        private static byte[] ColorArrayToRgbaBytes(Color[] frame) {
+            var bytes = new byte[frame.Length * 4];
+            for (int i = 0; i < frame.Length; i++) {
+                int offset = i * 4;
+                bytes[offset + 0] = frame[i].R;
+                bytes[offset + 1] = frame[i].G;
+                bytes[offset + 2] = frame[i].B;
+                bytes[offset + 3] = frame[i].A;
             }
-
-            rects.Add((new Rectangle(minX, minY, rectWidth, rectHeight), pixels));
-            dirtyCount = 1;
+            return bytes;
         }
 
         //When the game is resized. This will also be called on the first frame, so we can also run our initialization code here.
