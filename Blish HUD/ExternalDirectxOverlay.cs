@@ -1,6 +1,7 @@
 ﻿using Blish_HUD.Controls.Extern;
 using Blish_HUD.Input;
 using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics.PackedVector;
 using Microsoft.Xna.Framework.Input;
 using SharpDX.Direct3D9;
 using System;
@@ -13,6 +14,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -53,14 +55,56 @@ namespace Blish_HUD {
 
         private static readonly object _writeLock = new object();
         public static void ProcessFrame(Color[] frame) {
-            Task.Run(() => {
-                lock (_writeLock) { 
+                
+            EnqueueFrame(frame);
+                
+        }
+
+        private const int MAX_QUEUE_SIZE = 3;
+        private static readonly ConcurrentQueue<Color[]> _frameQueue = new ConcurrentQueue<Color[]>();
+        private static readonly AutoResetEvent _frameAvailable = new AutoResetEvent(false);
+        private static Thread _workerThread;
+        private static volatile bool _workerRunning = false;
+
+        public static void StartWorker() {
+            if (_workerRunning) return;
+            _workerRunning = true;
+            _workerThread = new Thread(FrameProcessingLoop) { IsBackground = true };
+            _workerThread.Start();
+        }
+
+        // Call this to stop the worker thread
+        public static void StopWorker() {
+            _workerRunning = false;
+            _frameAvailable.Set();
+            _workerThread?.Join();
+        }
+
+        // Enqueue a frame (from your render thread)
+        public static void EnqueueFrame(Color[] frame) {
+            if (!_workerRunning) {
+                StartWorker();
+            }
+            while (_frameQueue.Count >= MAX_QUEUE_SIZE) {
+                _frameQueue.TryDequeue(out _);
+            }
+            _frameQueue.Enqueue(frame);
+            _frameAvailable.Set();
+        }
+
+        // Worker thread: only this thread calls WriteToSharedMemory
+        private static void FrameProcessingLoop() {
+            while (_workerRunning) {
+                if (_frameQueue.TryDequeue(out var frame)) {
                     WriteToSharedMemory(frame);
+                } else {
+                    _frameAvailable.WaitOne();
                 }
-            });
+            }
         }
 
         public static void WriteToSharedMemory(Color[] currentFrame) {
+            
             if (Width < 50 || Height < 50) {
                 return;
             }
@@ -78,11 +122,11 @@ namespace Blish_HUD {
             // Write width, height
             HeaderAccesor.Write(0, Width);
             HeaderAccesor.Write(4, Height);
-
-            byte[] bytes = ColorArrayToRgbaBytes(currentFrame); 
-
+            
+            byte[] bytes = ColorArrayToRgbaBytes(currentFrame);
+            
             // Write frame data
-            BodyAccessor.WriteArray(0, bytes, 0, bytes.Length);
+            WriteToMMF(bytes);
 
             // Notify the rust DLL that a new frame is ready
             _frameConsumedEvent.Reset();
@@ -90,7 +134,32 @@ namespace Blish_HUD {
 
             // Update previous frame
             PreviousFrame = currentFrame;
+        }
 
+
+        // This is required to optimize writing frames to shared memory.
+        private static void WriteToMMF(byte[] bytes) {
+            //BodyAccessor.WriteArray(0, bytes, 0, bytes.Length);
+            unsafe {
+                byte* destPtr = null;
+                try {
+                    BodyAccessor.SafeMemoryMappedViewHandle.AcquirePointer(ref destPtr);
+                    destPtr += BodyAccessor.PointerOffset;
+
+                    fixed (byte* srcPtr = bytes) {
+                        Buffer.MemoryCopy(
+                            srcPtr,
+                            destPtr,
+                            bytes.Length,
+                            bytes.Length
+                        );
+                    }
+                } finally {
+                    if (destPtr != null) {
+                        BodyAccessor.SafeMemoryMappedViewHandle.ReleasePointer();
+                    }
+                }
+            }
         }
 
 
