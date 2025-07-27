@@ -38,11 +38,13 @@ namespace Blish_HUD {
         const string HEADERMAPNAME = "BlishHUD_Header";
         const string BODYMAPNAME = "BlishHUD_Body";
         const int HEADERSIZE = 8; //2 * 4 bytes for width, height
-        public static Color[] PreviousFrame = null;
         public static bool ForceOverlayHidden = false;
 
         //Just used as a buffer to receive data from GetBackBufferData. It's here to keep globals in this one file.
         public static Color[] PixelData;
+
+        //Used to store the pixel data as bytes for writing to shared memory.
+        private static byte[] _pixelDataBytes;
 
         //Events
         private static EventWaitHandle _frameReadyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, "BlishHUD_FrameReady");
@@ -109,37 +111,30 @@ namespace Blish_HUD {
                 return;
             }
 
-            if (PreviousFrame == null || PreviousFrame.Length != currentFrame.Length) {
-                PreviousFrame = new Color[currentFrame.Length];
-                PreviousFrame = currentFrame;
-            }
-
-
             //Wait for the rust side to consume the last frame sent.
             _frameConsumedEvent.WaitOne();
-
 
             // Write width, height
             HeaderAccesor.Write(0, Width);
             HeaderAccesor.Write(4, Height);
             
-            byte[] bytes = ColorArrayToRgbaBytes(currentFrame);
+
+            // Convert to bytes for WriteToMMF
+            ComputeColorToByte(currentFrame);
             
+
             // Write frame data
-            WriteToMMF(bytes);
+            WriteToMMF(_pixelDataBytes);
 
             // Notify the rust DLL that a new frame is ready
             _frameConsumedEvent.Reset();
             _frameReadyEvent.Set();
-
-            // Update previous frame
-            PreviousFrame = currentFrame;
         }
 
 
         // This is required to optimize writing frames to shared memory.
+        // Buffer.MemoryCopy is apparently a wrapper for memcpy, which already uses SMID and/or parallelization internally.
         private static void WriteToMMF(byte[] bytes) {
-            //BodyAccessor.WriteArray(0, bytes, 0, bytes.Length);
             unsafe {
                 byte* destPtr = null;
                 try {
@@ -162,37 +157,44 @@ namespace Blish_HUD {
             }
         }
 
+        private static void ComputeColorToByte(Color[] frame) {
+            int length = frame.Length;
+            int chunkSize = 8192;
+            int numChunks = (length + chunkSize - 1) / chunkSize;
 
-        //TODO: Evaluate if it's worth comparing frames and only sending the new frame if it's different.
-        //TODO: If so, use SMID (Vector<T>.EqualsAll).
-        /*private static bool FramesAreTheSame(Color[] a, Color[] b) {
-            if (!Vector.IsHardwareAccelerated) {
-                return a.SequenceEqual(b);
+            unsafe {
+                fixed (Color* colorPtr = frame)
+                fixed (byte* baseDestPtr = _pixelDataBytes) {
+                    Color* srcPtr = colorPtr;
+                    byte* destPtr = baseDestPtr;
+
+                    Parallel.For(0, numChunks, chunk =>
+                    {
+                        int start = chunk * chunkSize;
+                        int end = Math.Min(start + chunkSize, length);
+
+                        Color* src = srcPtr + start;
+                        byte* dest = destPtr + (start * 4);
+
+                        for (int i = 0; i < end - start; i++) {
+                            dest[i * 4 + 0] = src[i].R;
+                            dest[i * 4 + 1] = src[i].G;
+                            dest[i * 4 + 2] = src[i].B;
+                            dest[i * 4 + 3] = src[i].A;
+                        }
+                    });
+                }
             }
-            return true;
-        }*/
-
-
-        private static byte[] ColorArrayToRgbaBytes(Color[] frame) {
-            var bytes = new byte[frame.Length * 4];
-            for (int i = 0; i < frame.Length; i++) {
-                int offset = i * 4;
-                bytes[offset + 0] = frame[i].R;
-                bytes[offset + 1] = frame[i].G;
-                bytes[offset + 2] = frame[i].B;
-                bytes[offset + 3] = frame[i].A;
-            }
-            return bytes;
         }
 
         //When the game is resized. This will also be called on the first frame, so we can also run our initialization code here.
         public static void Resize(int w, int h) {
             if (HeaderMMF == null) {
-                PreviousFrame = null;
                 initializeMMF();
             }
             Width = w;
             Height = h;
+            _pixelDataBytes = new byte[w*h*4];
         }
 
         private static void initializeMMF() {
