@@ -88,7 +88,7 @@ namespace Blish_HUD.Overlay {
         private void NotifyOfNewRelease(CoreVersionManifest coreVersionManifest) {
             Logger.Info("New version (v{0}) of Blish HUD detected.", coreVersionManifest.Version);
 
-            if (this.NotifyOfNewReleases) {
+            if (this.NotifyOfNewReleases && ExternalDirectxOverlay.AutoUpdatesEnabled) {
                 ShowReleaseSplash(coreVersionManifest, true);
             }
         }
@@ -109,6 +109,9 @@ namespace Blish_HUD.Overlay {
         }
 
         public (bool Available, CoreVersionManifest NewManifest) GetUpdateAvailable() {
+            if (!ExternalDirectxOverlay.AutoUpdatesEnabled) {
+                return (false, default);
+            }
             if (this.LatestRelease.Version > Program.OverlayVersion) {
                 return (true, this.LatestRelease);
             }

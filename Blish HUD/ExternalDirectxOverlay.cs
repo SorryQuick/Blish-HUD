@@ -50,6 +50,11 @@ namespace Blish_HUD {
         private static EventWaitHandle _frameReadyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, "BlishHUD_FrameReady");
         private static EventWaitHandle _frameConsumedEvent = new EventWaitHandle(true, EventResetMode.ManualReset, "BlishHUD_FrameConsumed");
 
+        //Globals
+        public static bool AutoUpdatesEnabled = false;
+        public static uint FrameRateLimit = 120;
+
+
         /*
             Header : [ width (u32) | height (u32)]
             Body: [ Full Frame ]
