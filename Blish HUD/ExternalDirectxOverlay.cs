@@ -60,6 +60,16 @@ namespace Blish_HUD {
             Body: [ Full Frame ]
          */
 
+        private static readonly object _logLock = new object();
+        // simple logging function to write debug messages to a file
+        private static void Log(string level, string message, Exception ex = null) {
+            var logEntry = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] {message}";
+            if (ex != null) logEntry += Environment.NewLine + ex + Environment.NewLine;
+            lock (_logLock) {
+                File.AppendAllText("overlay_debug.txt", logEntry + Environment.NewLine);
+            }
+        }
+
         private static readonly object _writeLock = new object();
         public static void ProcessFrame(Color[] frame) {
                 
@@ -163,7 +173,15 @@ namespace Blish_HUD {
         }
 
         private static void ComputeColorToByte(Color[] frame) {
-            int length = frame.Length;
+            for (int i = 0; i < frame.Length; i++) {
+                var c = frame[i];
+                _pixelDataBytes[i * 4 + 0] = c.R;
+                _pixelDataBytes[i * 4 + 1] = c.G;
+                _pixelDataBytes[i * 4 + 2] = c.B;
+                _pixelDataBytes[i * 4 + 3] = c.A;
+            }
+            //This code sometimes hangs for some reason, eventually come back and do it properly.
+            /*int length = frame.Length;
             int chunkSize = 8192;
             int numChunks = (length + chunkSize - 1) / chunkSize;
 
@@ -189,7 +207,7 @@ namespace Blish_HUD {
                         }
                     });
                 }
-            }
+            }*/
         }
 
         //When the game is resized. This will also be called on the first frame, so we can also run our initialization code here.
