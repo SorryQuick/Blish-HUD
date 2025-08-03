@@ -60,7 +60,7 @@ namespace Blish_HUD {
         protected override void Initialize() {
             FormHandle = this.Window.Handle;
             Form       = Control.FromHandle(FormHandle).FindForm();
-
+            ExternalDirectxOverlay.setupNewWndProc();
 
             Form.BackColor = System.Drawing.Color.Black;
             // Avoid the flash the window shows when the application launches (-32000x-32000 is where windows places minimized windows)

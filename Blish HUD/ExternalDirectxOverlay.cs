@@ -229,7 +229,6 @@ namespace Blish_HUD {
             HeaderAccesor = HeaderMMF.CreateViewAccessor(0, HEADERSIZE, MemoryMappedFileAccess.ReadWrite);
             BodyAccessor = BodyMMF.CreateViewAccessor(0, totalSize, MemoryMappedFileAccess.ReadWrite);
             _frameConsumedEvent.Set();
-            setupNewWndProc();
         }
 
 
