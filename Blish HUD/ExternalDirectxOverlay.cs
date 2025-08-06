@@ -1,24 +1,15 @@
-﻿using Blish_HUD.Controls.Extern;
-using Blish_HUD.Input;
+﻿using Blish_HUD.Input;
 using Microsoft.Xna.Framework;
-using Microsoft.Xna.Framework.Graphics.PackedVector;
 using Microsoft.Xna.Framework.Input;
-using SharpDX.Direct3D9;
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.IO.MemoryMappedFiles;
-using System.Linq;
 using System.Net;
 using System.Net.Sockets;
-using System.Numerics;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
-using System.Threading.Tasks;
-using System.Windows.Forms;
 using MouseEventArgs = Blish_HUD.Input.MouseEventArgs;
 
 namespace Blish_HUD {
@@ -69,20 +60,33 @@ namespace Blish_HUD {
          */
 
         private static readonly object _logLock = new object();
-        // simple logging function to write debug messages to a file
-        private static void Log(string level, string message, Exception ex = null) {
-            var logEntry = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] {message}";
-            if (ex != null) logEntry += Environment.NewLine + ex + Environment.NewLine;
-            lock (_logLock) {
-                File.AppendAllText("overlay_debug.txt", logEntry + Environment.NewLine);
+        private static string _logPath;
+        //simple logging function to write debug messages to a file
+        public static void Log(string level, string message, Exception ex = null) {
+            if (_logPath == null) {
+                var logsDir = Path.Combine(AppContext.BaseDirectory, "..", "logs");
+                Directory.CreateDirectory(logsDir);
+
+                string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss", CultureInfo.InvariantCulture);
+                _logPath = Path.Combine(logsDir, $"BlishHUD-{timestamp}.log");
             }
+
+            var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+            var logEntry = $"[{now}] [BlishHUD] [{level.ToUpper()}] {message}";
+
+            if (ex != null) {
+                logEntry += Environment.NewLine + ex + Environment.NewLine;
+            }
+
+            lock (_logLock) {
+                File.AppendAllText(_logPath, logEntry + Environment.NewLine);
+            }
+            Console.WriteLine(logEntry);
         }
 
         private static readonly object _writeLock = new object();
         public static void ProcessFrame(Color[] frame) {
-                
             EnqueueFrame(frame);
-                
         }
 
         private const int MAX_QUEUE_SIZE = 3;
@@ -141,44 +145,47 @@ namespace Blish_HUD {
         }
 
         public static void WriteToSharedMemory(Color[] currentFrame) {
-            
-            if (Width < 50 || Height < 50) {
-                return;
+            try {
+                if (Width < 50 || Height < 50) {
+                    return;
+                }
+
+                //Wait for the rust side to consume the last frame sent.
+                _frameConsumedEvent.WaitOne();
+
+                bool framesDifferent = AreFramesDifferent(currentFrame, _previousFrameSent);
+
+                // Write width, height
+                HeaderAccesor.Write(0, Width);
+                HeaderAccesor.Write(4, Height);
+
+                int hold = framesDifferent ? 0 : 1;
+
+                HeaderAccesor.Write(8, hold);
+
+                if (framesDifferent) {
+                    // Convert to bytes for WriteToMMF
+                    ComputeColorToByte(currentFrame);
+
+                    // Write frame data
+                    WriteToMMF(_pixelDataBytes);
+
+                    // Notify the rust DLL that a new frame is ready
+                    _frameConsumedEvent.Reset();
+                    _frameReadyEvent.Set();
+
+                    _wasHolding = false;
+                } else if (!_wasHolding) {
+                    _frameConsumedEvent.Reset();
+                    _frameReadyEvent.Set();
+
+                    _wasHolding = true;
+                }
+
+                _previousFrameSent = currentFrame;
+            } catch (Exception ex) {
+                Log("Error", "Failed to write the frame to MMF", ex);
             }
-
-            //Wait for the rust side to consume the last frame sent.
-            _frameConsumedEvent.WaitOne();
-
-            bool framesDifferent = AreFramesDifferent(currentFrame, _previousFrameSent);
-
-            // Write width, height
-            HeaderAccesor.Write(0, Width);
-            HeaderAccesor.Write(4, Height);
-
-            int hold = framesDifferent ? 0 : 1;
-
-            HeaderAccesor.Write(8, hold);
-
-            if (framesDifferent) {
-                // Convert to bytes for WriteToMMF
-                ComputeColorToByte(currentFrame);
-
-                // Write frame data
-                WriteToMMF(_pixelDataBytes);
-
-                // Notify the rust DLL that a new frame is ready
-                _frameConsumedEvent.Reset();
-                _frameReadyEvent.Set();
-
-                _wasHolding = false;
-            } else if (!_wasHolding) {
-                _frameConsumedEvent.Reset();
-                _frameReadyEvent.Set();
-
-                _wasHolding = true;
-            }
-
-            _previousFrameSent = currentFrame;
         }
 
         //Checks if 2 frames are dfferent
@@ -303,6 +310,7 @@ namespace Blish_HUD {
                     _isInterfaceHidden = false;
                 }
             };
+            Log("Debug", "BlishHUD started successfully.");
         }
 
 
