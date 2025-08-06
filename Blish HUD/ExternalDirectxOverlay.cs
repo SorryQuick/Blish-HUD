@@ -37,11 +37,11 @@ namespace Blish_HUD {
         public static int Height = 0;
         const string HEADERMAPNAME = "BlishHUD_Header";
         const string BODYMAPNAME = "BlishHUD_Body";
-        const int HEADERSIZE = 8; //2 * 4 bytes for width, height
-        public static bool ForceOverlayHidden = false;
+        const int HEADERSIZE = 12; //2 * 4 bytes for width, height, 4 byte bool
 
         //Just used as a buffer to receive data from GetBackBufferData. It's here to keep globals in this one file.
         public static Color[] PixelData;
+        private static Color[] _previousFrameSent;
 
         //Used to store the pixel data as bytes for writing to shared memory.
         private static byte[] _pixelDataBytes;
@@ -52,11 +52,19 @@ namespace Blish_HUD {
 
         //Globals
         public static bool AutoUpdatesEnabled = false;
-        public static uint FrameRateLimit = 120;
+
+        //Mutex the rust side can use to check if Blish is still running.
+        private static Mutex _isAliveMtx = new Mutex(true, "Global\\blish_isalive_mutex");
+
+        private static uint _prevHash = 0;
+        private static bool _wasHolding = false;
+
+        //Because for some reason I can't make it work peroperly with GameService.Overlay.InterfaceHidden
+        private static volatile bool _isInterfaceHidden = false;
 
 
         /*
-            Header : [ width (u32) | height (u32)]
+            Header : [ width (u32) | height (u32) | hold (4 byte bool)]
             Body: [ Full Frame ]
          */
 
@@ -99,6 +107,9 @@ namespace Blish_HUD {
 
         // Enqueue a frame (from your render thread)
         public static void EnqueueFrame(Color[] frame) {
+            if (_isInterfaceHidden) {
+                return;
+            }
             if (!_workerRunning) {
                 StartWorker();
             }
@@ -120,6 +131,15 @@ namespace Blish_HUD {
             }
         }
 
+        //This sends a "shutdown frame" which is really just the last frame with hold = false
+        private static void SendShutdownFrame() {
+            while (_frameQueue.TryDequeue(out _)) { }
+            HeaderAccesor.Write(8, 0);
+            _previousFrameSent = null;
+            _frameConsumedEvent.Reset();
+            _frameReadyEvent.Set();
+        }
+
         public static void WriteToSharedMemory(Color[] currentFrame) {
             
             if (Width < 50 || Height < 50) {
@@ -129,21 +149,66 @@ namespace Blish_HUD {
             //Wait for the rust side to consume the last frame sent.
             _frameConsumedEvent.WaitOne();
 
+            bool framesDifferent = AreFramesDifferent(currentFrame, _previousFrameSent);
+
             // Write width, height
             HeaderAccesor.Write(0, Width);
             HeaderAccesor.Write(4, Height);
-            
 
-            // Convert to bytes for WriteToMMF
-            ComputeColorToByte(currentFrame);
-            
+            int hold = framesDifferent ? 0 : 1;
 
-            // Write frame data
-            WriteToMMF(_pixelDataBytes);
+            HeaderAccesor.Write(8, hold);
 
-            // Notify the rust DLL that a new frame is ready
-            _frameConsumedEvent.Reset();
-            _frameReadyEvent.Set();
+            if (framesDifferent) {
+                // Convert to bytes for WriteToMMF
+                ComputeColorToByte(currentFrame);
+
+                // Write frame data
+                WriteToMMF(_pixelDataBytes);
+
+                // Notify the rust DLL that a new frame is ready
+                _frameConsumedEvent.Reset();
+                _frameReadyEvent.Set();
+
+                _wasHolding = false;
+            } else if (!_wasHolding) {
+                _frameConsumedEvent.Reset();
+                _frameReadyEvent.Set();
+
+                _wasHolding = true;
+            }
+
+            _previousFrameSent = currentFrame;
+        }
+
+        //Checks if 2 frames are dfferent
+        private static unsafe bool AreFramesDifferent(Color[] a, Color[] b) {
+            if (b == null || b.Length != a.Length || a == null || b == null)
+                return true;
+
+            uint currentHash = ComputeFrameHash(a);
+
+            if (currentHash != _prevHash) {
+                _prevHash = currentHash;
+                return true;
+            }
+
+            return false;
+        }
+
+        //Could be optimized, but fast enough for now. 
+        private static uint ComputeFrameHash(Color[] frame) {
+            Span<uint> data = MemoryMarshal.Cast<Color, uint>(frame);
+
+            const uint fnvPrime = 16777619;
+            uint hash = 2166136261;
+
+            foreach (var value in data) {
+                hash ^= value;
+                hash *= fnvPrime;
+            }
+
+            return hash;
         }
 
 
@@ -229,6 +294,15 @@ namespace Blish_HUD {
             HeaderAccesor = HeaderMMF.CreateViewAccessor(0, HEADERSIZE, MemoryMappedFileAccess.ReadWrite);
             BodyAccessor = BodyMMF.CreateViewAccessor(0, totalSize, MemoryMappedFileAccess.ReadWrite);
             _frameConsumedEvent.Set();
+
+            GameService.Overlay.HideAllInterface.Value.Activated += (sender, e) => {
+                if (!_isInterfaceHidden) {
+                    _isInterfaceHidden = true;
+                    SendShutdownFrame();
+                } else {
+                    _isInterfaceHidden = false;
+                }
+            };
         }
 
 
@@ -261,30 +335,8 @@ namespace Blish_HUD {
                             int x = BitConverter.ToInt32(data, 1);
                             int y = BitConverter.ToInt32(data, 5);
 
-                            //Left Button Pressed
-                            if (eventTypeId == 0) {
-                                GameService.Input.Mouse.HandleInput(new MouseEventArgs(
-                                    MouseEventType.LeftMouseButtonPressed,
-                                    x,
-                                    y,
-                                    0,
-                                    0,
-                                    Environment.TickCount,
-                                    0
-                                ));
-                            //Left Button Released
-                            } else if (eventTypeId == 1) {
-                                GameService.Input.Mouse.HandleInput(new MouseEventArgs(
-                                    MouseEventType.LeftMouseButtonReleased,
-                                    x,
-                                    y,
-                                    0,
-                                    0,
-                                    Environment.TickCount,
-                                    0
-                                ));
-                            //Mouse Moved
-                            } else if (eventTypeId == 2) {
+                            //Mouse moved
+                            if (eventTypeId == 2) {
                                 MouseState oldState = GameService.Input.Mouse.StaticMouseState;
                                 GameService.Input.Mouse.StaticMouseState = new MouseState(
                                     x,
@@ -305,32 +357,10 @@ namespace Blish_HUD {
                                     Environment.TickCount,
                                     0
                                 ));
-                            //Right Button Pressed  
-                            } else if (eventTypeId == 3) {
-                                GameService.Input.Mouse.HandleInput(new MouseEventArgs(
-                                    MouseEventType.RightMouseButtonPressed,
-                                    x,
-                                    y,
-                                    0,
-                                    0,
-                                    Environment.TickCount,
-                                    0
-                                ));
-                            //Right Button Released
-                            } else if (eventTypeId == 4) {
-                                GameService.Input.Mouse.HandleInput(new MouseEventArgs(
-                                    MouseEventType.RightMouseButtonReleased,
-                                    x,
-                                    y,
-                                    0,
-                                    0,
-                                    Environment.TickCount,
-                                    0
-                                ));
                             }
                         }
                     } catch (SocketException) {
-                        //TODO
+                        Log("Error", "SocketException occurred while receiving UDP data.");
                     }
                 }
             }
