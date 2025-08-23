@@ -47,6 +47,7 @@ namespace Blish_HUD {
         /// </summary>
         [STAThread]
         private static void Main(string[] args) {
+            ExternalDirectxOverlay.PatchUnregisterNotifications();
             Directory.SetCurrentDirectory(Path.GetDirectoryName(Application.ExecutablePath));
 
             var settings = Cli.Parse<ApplicationSettings>(args);

@@ -8,6 +8,8 @@ using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using MouseEventArgs = Blish_HUD.Input.MouseEventArgs;
@@ -434,6 +436,41 @@ namespace Blish_HUD {
             }
 
             return CallOriginalWndProc(hWnd, msg, wParam, lParam);
+        }
+
+        //This patches audio to work on linux. Basically it stubs the methods that wine does not implement.
+        //Using Harmony would be 1000% better, but it did not seem feasible due to .Net versions.
+
+        [DllImport("kernel32")]
+        private static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
+
+        public static void PatchUnregisterNotifications() {
+            try {
+                var method = typeof(NAudio.CoreAudioApi.AudioSessionManager)
+                                .GetMethod("UnregisterNotifications", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (method == null) return;
+
+                //Force compile
+                RuntimeHelpers.PrepareMethod(method.MethodHandle);
+
+                IntPtr ptr = method.MethodHandle.GetFunctionPointer();
+
+                //0xC3 = ret
+                //Only on x86_64 and probably x86.
+                byte[] patch = { 0xC3 };
+
+                //Make memory writable
+                VirtualProtect(ptr, (UIntPtr)patch.Length, 0x40, out uint oldProtect);
+
+                //Patch
+                Marshal.Copy(patch, 0, ptr, patch.Length);
+
+                //Restore protect
+                VirtualProtect(ptr, (UIntPtr)patch.Length, oldProtect, out _);
+
+            } catch (Exception ex) {
+                Log("Debug", "Failed to patch audio", ex);
+            }
         }
     }
 }

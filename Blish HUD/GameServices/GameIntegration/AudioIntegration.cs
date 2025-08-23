@@ -185,7 +185,7 @@ namespace Blish_HUD.GameIntegration {
         private void InitializeProcessMeterInformations() {
             if (!_service.Gw2Instance.Gw2IsRunning) return;
 
-            /*_gw2AudioDevices.Clear();
+            _gw2AudioDevices.Clear();
             foreach (var device in _deviceEnumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)) {
                 SessionCollection sessionEnumerator = null;
 
@@ -217,7 +217,7 @@ namespace Blish_HUD.GameIntegration {
                 if (shouldDispose) {
                     device.Dispose();
                 }
-            }*/
+            }
         }
 
         public override void Unload() {
