@@ -1,6 +1,8 @@
 ﻿using Blish_HUD.Input;
-using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
+using SharpDX.Direct3D11;
+using SharpDX.DXGI;
 using System;
 using System.Collections.Concurrent;
 using System.Globalization;
@@ -11,8 +13,11 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Threading;
+using Color = Microsoft.Xna.Framework.Color;
 using MouseEventArgs = Blish_HUD.Input.MouseEventArgs;
+using Texture2D = SharpDX.Direct3D11.Texture2D;
 
 namespace Blish_HUD {
     internal static class ExternalDirectxOverlay {
@@ -24,24 +29,20 @@ namespace Blish_HUD {
         //-------------------------------------------- RENDERING ---------------------------------------------//
         public static MemoryMappedFile HeaderMMF = null;
         public static MemoryMappedViewAccessor HeaderAccesor = null;
-        public static MemoryMappedFile BodyMMF = null;
-        public static MemoryMappedViewAccessor BodyAccessor = null;
         public static int Width = 0 ;
         public static int Height = 0;
         const string HEADERMAPNAME = "BlishHUD_Header";
-        const string BODYMAPNAME = "BlishHUD_Body";
-        const int HEADERSIZE = 12; //2 * 4 bytes for width, height, 4 byte bool
+        const int HEADERSIZE = 28;
+        private static uint _textureIdx = 0;
 
-        //Just used as a buffer to receive data from GetBackBufferData. It's here to keep globals in this one file.
-        public static Color[] PixelData;
-        private static Color[] _previousFrameSent;
 
-        //Used to store the pixel data as bytes for writing to shared memory.
-        private static byte[] _pixelDataBytes;
+        private static readonly object _writeLock = new object();
 
-        //Events
-        private static EventWaitHandle _frameReadyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, "BlishHUD_FrameReady");
-        private static EventWaitHandle _frameConsumedEvent = new EventWaitHandle(true, EventResetMode.ManualReset, "BlishHUD_FrameConsumed");
+        //Double buffer for synchronicity
+        private static Texture2D[] _textures2D;
+        public static RenderTarget2D RenderTarget;
+        private static SharpDX.Direct3D11.Device _device;
+        public static IntPtr[] SharedTextureHandles;
 
         //Globals
         public static bool AutoUpdatesEnabled = false;
@@ -49,15 +50,12 @@ namespace Blish_HUD {
         //Mutex the rust side can use to check if Blish is still running.
         private static Mutex _isAliveMtx = new Mutex(true, "Global\\blish_isalive_mutex");
 
-        private static uint _prevHash = 0;
-        private static bool _wasHolding = false;
-
         //Because for some reason I can't make it work peroperly with GameService.Overlay.InterfaceHidden
         private static volatile bool _isInterfaceHidden = false;
 
 
         /*
-            Header : [ width (u32) | height (u32) | hold (4 byte bool)]
+            Header : [ width (u32) | height (u32) | index (u32) | sharedtextureptr1 (u64) | sharedtextureptr2 (u64)]
             Body: [ Full Frame ]
          */
 
@@ -86,228 +84,91 @@ namespace Blish_HUD {
             Console.WriteLine(logEntry);
         }
 
-        private static readonly object _writeLock = new object();
-        public static void ProcessFrame(Color[] frame) {
-            EnqueueFrame(frame);
+        public static void InitSharedTexture(GraphicsDevice device) {
+            var param = device.PresentationParameters;
+            Width = param.BackBufferWidth;
+            Height = param.BackBufferHeight;
+            
+            initializeMMF();
+
+            ResizeTextures(device);
         }
 
-        private const int MAX_QUEUE_SIZE = 3;
-        private static readonly ConcurrentQueue<Color[]> _frameQueue = new ConcurrentQueue<Color[]>();
-        private static readonly AutoResetEvent _frameAvailable = new AutoResetEvent(false);
-        private static Thread _workerThread;
-        private static volatile bool _workerRunning = false;
+        public static void ResizeTextures(GraphicsDevice device) {
+            RenderTarget = new RenderTarget2D(
+                device,
+                Width,
+                Height,
+                false,
+                SurfaceFormat.Color,
+                DepthFormat.None,
+                0,
+                RenderTargetUsage.PreserveContents
+            );
 
-        public static void StartWorker() {
-            if (_workerRunning) return;
-            _workerRunning = true;
-            _workerThread = new Thread(FrameProcessingLoop) { IsBackground = true };
-            _workerThread.Start();
-        }
+            var desc = new Texture2DDescription {
+                Width = Width,
+                Height = Height,
+                MipLevels = 1,
+                ArraySize = 1,
+                Format = Format.R8G8B8A8_UNorm,
+                SampleDescription = new SampleDescription(1, 0),
+                Usage = ResourceUsage.Default,
+                BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
+                CpuAccessFlags = CpuAccessFlags.None,
+                OptionFlags = ResourceOptionFlags.Shared
+            };
+            _device = (SharpDX.Direct3D11.Device)typeof(GraphicsDevice).GetField("_d3dDevice", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(device);
 
-        // Call this to stop the worker thread
-        public static void StopWorker() {
-            _workerRunning = false;
-            _frameAvailable.Set();
-            _workerThread?.Join();
-        }
+            _textures2D = new Texture2D[] { new Texture2D(_device, desc), new Texture2D(_device, desc) };
 
-        // Enqueue a frame (from your render thread)
-        public static void EnqueueFrame(Color[] frame) {
-            if (_isInterfaceHidden) {
-                return;
-            }
-            if (!_workerRunning) {
-                StartWorker();
-            }
-            while (_frameQueue.Count >= MAX_QUEUE_SIZE) {
-                _frameQueue.TryDequeue(out _);
-            }
-            _frameQueue.Enqueue(frame);
-            _frameAvailable.Set();
-        }
-
-        // Worker thread: only this thread calls WriteToSharedMemory
-        private static void FrameProcessingLoop() {
-            while (_workerRunning) {
-                if (_frameQueue.TryDequeue(out var frame)) {
-                    WriteToSharedMemory(frame);
-                } else {
-                    _frameAvailable.WaitOne();
-                }
-            }
-        }
-
-        //This sends a "shutdown frame" which is really just the last frame with hold = false
-        private static void SendShutdownFrame() {
-            while (_frameQueue.TryDequeue(out _)) { }
-            HeaderAccesor.Write(8, 0);
-            _previousFrameSent = null;
-            _frameConsumedEvent.Reset();
-            _frameReadyEvent.Set();
-        }
-
-        public static void WriteToSharedMemory(Color[] currentFrame) {
-            try {
-                if (Width < 50 || Height < 50) {
-                    return;
-                }
-
-                //Wait for the rust side to consume the last frame sent.
-                _frameConsumedEvent.WaitOne();
-
-                bool framesDifferent = AreFramesDifferent(currentFrame, _previousFrameSent);
-
-                // Write width, height
-                HeaderAccesor.Write(0, Width);
-                HeaderAccesor.Write(4, Height);
-
-                int hold = framesDifferent ? 0 : 1;
-
-                HeaderAccesor.Write(8, hold);
-
-                if (framesDifferent) {
-                    // Convert to bytes for WriteToMMF
-                    ComputeColorToByte(currentFrame);
-
-                    // Write frame data
-                    WriteToMMF(_pixelDataBytes);
-
-                    // Notify the rust DLL that a new frame is ready
-                    _frameConsumedEvent.Reset();
-                    _frameReadyEvent.Set();
-
-                    _wasHolding = false;
-                } else if (!_wasHolding) {
-                    _frameConsumedEvent.Reset();
-                    _frameReadyEvent.Set();
-
-                    _wasHolding = true;
-                }
-
-                _previousFrameSent = currentFrame;
-            } catch (Exception ex) {
-                Log("Error", "Failed to write the frame to MMF", ex);
-            }
-        }
-
-        //Checks if 2 frames are dfferent
-        private static unsafe bool AreFramesDifferent(Color[] a, Color[] b) {
-            if (b == null || b.Length != a.Length || a == null || b == null)
-                return true;
-
-            uint currentHash = ComputeFrameHash(a);
-
-            if (currentHash != _prevHash) {
-                _prevHash = currentHash;
-                return true;
-            }
-
-            return false;
-        }
-
-        //Could be optimized, but fast enough for now. 
-        private static uint ComputeFrameHash(Color[] frame) {
-            Span<uint> data = MemoryMarshal.Cast<Color, uint>(frame);
-
-            const uint fnvPrime = 16777619;
-            uint hash = 2166136261;
-
-            foreach (var value in data) {
-                hash ^= value;
-                hash *= fnvPrime;
-            }
-
-            return hash;
-        }
-
-
-        // This is required to optimize writing frames to shared memory.
-        // Buffer.MemoryCopy is apparently a wrapper for memcpy, which already uses SMID and/or parallelization internally.
-        private static void WriteToMMF(byte[] bytes) {
-            unsafe {
-                byte* destPtr = null;
+            SharedTextureHandles = new IntPtr[_textures2D.Length];
+            for (int i = 0; i < _textures2D.Length; i++) {
+                SharpDX.DXGI.Resource dxgiResource = null;
                 try {
-                    BodyAccessor.SafeMemoryMappedViewHandle.AcquirePointer(ref destPtr);
-                    destPtr += BodyAccessor.PointerOffset;
+                    dxgiResource = _textures2D[i].QueryInterface<SharpDX.DXGI.Resource>();
+                    SharedTextureHandles[i] = dxgiResource.SharedHandle;
 
-                    fixed (byte* srcPtr = bytes) {
-                        Buffer.MemoryCopy(
-                            srcPtr,
-                            destPtr,
-                            bytes.Length,
-                            bytes.Length
-                        );
+                    if (SharedTextureHandles[i] == IntPtr.Zero) {
+                        Log("debug", "QueryInterface succeeded but shared handle is NULL. Sharing not supported.");
                     }
+                } catch (SharpDX.SharpDXException ex) {
+                    Log("debug", $"Failed to get shared handle. HRESULT: 0x{ex.ResultCode.Code:X8}", ex);
                 } finally {
-                    if (destPtr != null) {
-                        BodyAccessor.SafeMemoryMappedViewHandle.ReleasePointer();
-                    }
+                    dxgiResource?.Dispose();
                 }
             }
+
+            HeaderAccesor.Write(0, Width);
+            HeaderAccesor.Write(4, Height);
+            HeaderAccesor.Write(8, _textureIdx);
+            HeaderAccesor.Write(12, SharedTextureHandles[0].ToInt64());
+            HeaderAccesor.Write(20, SharedTextureHandles[1].ToInt64());
         }
 
-        private static void ComputeColorToByte(Color[] frame) {
-            for (int i = 0; i < frame.Length; i++) {
-                var c = frame[i];
-                _pixelDataBytes[i * 4 + 0] = c.R;
-                _pixelDataBytes[i * 4 + 1] = c.G;
-                _pixelDataBytes[i * 4 + 2] = c.B;
-                _pixelDataBytes[i * 4 + 3] = c.A;
+        public static void CopyToSharedTexture() {
+            var backBufferTexture = (Texture2D) typeof(RenderTarget2D).GetField("_texture", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(RenderTarget);
+            _device.ImmediateContext.CopyResource(backBufferTexture, _textures2D[0]);
+            _device.ImmediateContext.Flush();
+            FlipBufferIdx();
+        }
+
+        private static void FlipBufferIdx() {
+            if (_textureIdx == 0) {
+                _textureIdx = 1;
+            } else {
+                _textureIdx = 0;
             }
-            //This code sometimes hangs for some reason, eventually come back and do it properly.
-            /*int length = frame.Length;
-            int chunkSize = 8192;
-            int numChunks = (length + chunkSize - 1) / chunkSize;
-
-            unsafe {
-                fixed (Color* colorPtr = frame)
-                fixed (byte* baseDestPtr = _pixelDataBytes) {
-                    Color* srcPtr = colorPtr;
-                    byte* destPtr = baseDestPtr;
-
-                    Parallel.For(0, numChunks, chunk =>
-                    {
-                        int start = chunk * chunkSize;
-                        int end = Math.Min(start + chunkSize, length);
-
-                        Color* src = srcPtr + start;
-                        byte* dest = destPtr + (start * 4);
-
-                        for (int i = 0; i < end - start; i++) {
-                            dest[i * 4 + 0] = src[i].R;
-                            dest[i * 4 + 1] = src[i].G;
-                            dest[i * 4 + 2] = src[i].B;
-                            dest[i * 4 + 3] = src[i].A;
-                        }
-                    });
-                }
-            }*/
+            HeaderAccesor.Write(8, _textureIdx);
         }
-
-        //When the game is resized. This will also be called on the first frame, so we can also run our initialization code here.
-        public static void Resize(int w, int h) {
-            if (HeaderMMF == null) {
-                initializeMMF();
-            }
-            Width = w;
-            Height = h;
-            _pixelDataBytes = new byte[w*h*4];
-        }
-
+        
         private static void initializeMMF() {
-            //TODO: Dynamic size (why do I need 30mb...I don't...)
-            //Initialization goes here, move this elsewhere later
-            int totalSize = (3840 * 2160 * 4) + 4; // Max size at 3840x2160 with 4 bytes per pixel
             HeaderMMF = MemoryMappedFile.CreateOrOpen(HEADERMAPNAME, HEADERSIZE, MemoryMappedFileAccess.ReadWrite);
-            BodyMMF = MemoryMappedFile.CreateOrOpen(BODYMAPNAME, totalSize, MemoryMappedFileAccess.ReadWrite);
             HeaderAccesor = HeaderMMF.CreateViewAccessor(0, HEADERSIZE, MemoryMappedFileAccess.ReadWrite);
-            BodyAccessor = BodyMMF.CreateViewAccessor(0, totalSize, MemoryMappedFileAccess.ReadWrite);
-            _frameConsumedEvent.Set();
 
             GameService.Overlay.HideAllInterface.Value.Activated += (sender, e) => {
                 if (!_isInterfaceHidden) {
                     _isInterfaceHidden = true;
-                    SendShutdownFrame();
                 } else {
                     _isInterfaceHidden = false;
                 }

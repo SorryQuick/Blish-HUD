@@ -2,6 +2,7 @@
 using Blish_HUD.Entities;
 using Blish_HUD.Graphics;
 using Blish_HUD.Settings;
+using Blish_HUD.Strings.GameServices;
 using Gw2Sharp.Mumble.Models;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -415,10 +416,26 @@ namespace Blish_HUD {
             _renderTimer.Restart();
 
             using GraphicsDeviceContext ctx = this.LendGraphicsDeviceContext();
+
+            RenderTarget2D originalRT = null;
+            var currentRTs = ctx.GraphicsDevice.GetRenderTargets();
+            if (currentRTs.Length > 0) {
+                originalRT = currentRTs[0].RenderTarget as RenderTarget2D;
+            }
+            ctx.GraphicsDevice.SetRenderTarget(ExternalDirectxOverlay.RenderTarget);
             
             if (_renderTimer.ElapsedMilliseconds > 1) {
                 Logger.Debug($"Render thread stalled for {_renderTimer.ElapsedMilliseconds} ms.");
             }
+            var device = ctx.GraphicsDevice;
+
+            if (ExternalDirectxOverlay.SharedTextureHandles == null) {
+                ExternalDirectxOverlay.InitSharedTexture(device);
+            }
+            if (ExternalDirectxOverlay.Width != device.PresentationParameters.BackBufferWidth || ExternalDirectxOverlay.Height != device.PresentationParameters.BackBufferHeight) {
+                ExternalDirectxOverlay.ResizeTextures(device);
+            }
+
 
             ctx.GraphicsDevice.Clear(Color.Transparent);
 
@@ -453,27 +470,8 @@ namespace Blish_HUD {
             }
             GameService.Debug.StopTimeFunc("Render Queue");
 
-            //--------------------------------------------------------------------------------------------------
-            var device = ctx.GraphicsDevice;
-            int newWidth = device.PresentationParameters.BackBufferWidth;
-            int newHeight = device.PresentationParameters.BackBufferHeight;
-            int width = ExternalDirectxOverlay.Width;
-            int height = ExternalDirectxOverlay.Height;
-
-            if (newWidth != width || newHeight != height || ExternalDirectxOverlay.HeaderMMF == null) {
-                ExternalDirectxOverlay.Resize(newWidth, newHeight);
-                ExternalDirectxOverlay.PixelData = new Color[newWidth * newHeight];
-            }
-
-            try {
-                device.GetBackBufferData(ExternalDirectxOverlay.PixelData);
-                ExternalDirectxOverlay.ProcessFrame(ExternalDirectxOverlay.PixelData);
-                
-            } catch (Exception ex) {
-                //File.AppendAllText("log.txt", ex.Message + Environment.NewLine);
-            }
-
-            //--------------------------------------------------------------------------------------------------
+            ExternalDirectxOverlay.CopyToSharedTexture();
+            ctx.GraphicsDevice.SetRenderTarget(originalRT);
         }
 
         protected override void Load() { /* NOOP */ }
