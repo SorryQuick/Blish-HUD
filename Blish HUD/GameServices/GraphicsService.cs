@@ -418,9 +418,12 @@ namespace Blish_HUD {
             using GraphicsDeviceContext ctx = this.LendGraphicsDeviceContext();
 
             RenderTarget2D originalRT = null;
-            var currentRTs = ctx.GraphicsDevice.GetRenderTargets();
-            if (currentRTs.Length > 0) {
-                originalRT = currentRTs[0].RenderTarget as RenderTarget2D;
+            if (!ExternalDirectxOverlay.InterfaceHidden) {
+                
+                var currentRTs = ctx.GraphicsDevice.GetRenderTargets();
+                if (currentRTs.Length > 0) {
+                    originalRT = currentRTs[0].RenderTarget as RenderTarget2D;
+                }
             }
             
             
@@ -429,14 +432,15 @@ namespace Blish_HUD {
             }
             var device = ctx.GraphicsDevice;
 
-            if (ExternalDirectxOverlay.SharedTextureHandles == null) {
-                ExternalDirectxOverlay.InitSharedTexture(device);
+            if (!ExternalDirectxOverlay.InterfaceHidden) {
+                if (ExternalDirectxOverlay.SharedTextureHandles == null) {
+                    ExternalDirectxOverlay.InitSharedTexture(device);
+                }
+                if (ExternalDirectxOverlay.Width != device.PresentationParameters.BackBufferWidth || ExternalDirectxOverlay.Height != device.PresentationParameters.BackBufferHeight) {
+                    ExternalDirectxOverlay.ResizeTextures(device);
+                }
+                ctx.GraphicsDevice.SetRenderTarget(ExternalDirectxOverlay.RenderTarget);
             }
-            if (ExternalDirectxOverlay.Width != device.PresentationParameters.BackBufferWidth || ExternalDirectxOverlay.Height != device.PresentationParameters.BackBufferHeight) {
-                ExternalDirectxOverlay.ResizeTextures(device);
-            }
-
-            ctx.GraphicsDevice.SetRenderTarget(ExternalDirectxOverlay.RenderTarget);
 
 
             ctx.GraphicsDevice.Clear(Color.Transparent);
@@ -473,7 +477,9 @@ namespace Blish_HUD {
             GameService.Debug.StopTimeFunc("Render Queue");
 
             ExternalDirectxOverlay.CopyToSharedTexture();
-            ctx.GraphicsDevice.SetRenderTarget(originalRT);
+            if (!ExternalDirectxOverlay.InterfaceHidden) {
+                ctx.GraphicsDevice.SetRenderTarget(originalRT);
+            }
         }
 
         protected override void Load() { /* NOOP */ }

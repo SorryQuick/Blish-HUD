@@ -1,6 +1,7 @@
 ﻿using Blish_HUD.Input;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
+using SharpDX;
 using SharpDX.Direct3D11;
 using SharpDX.DXGI;
 using System;
@@ -51,7 +52,7 @@ namespace Blish_HUD {
         private static Mutex _isAliveMtx = new Mutex(true, "Global\\blish_isalive_mutex");
 
         //Because for some reason I can't make it work peroperly with GameService.Overlay.InterfaceHidden
-        private static volatile bool _isInterfaceHidden = false;
+        public static volatile bool InterfaceHidden = false;
 
 
         /*
@@ -177,13 +178,28 @@ namespace Blish_HUD {
             HeaderAccesor = HeaderMMF.CreateViewAccessor(0, HEADERSIZE, MemoryMappedFileAccess.ReadWrite);
 
             GameService.Overlay.HideAllInterface.Value.Activated += (sender, e) => {
-                if (!_isInterfaceHidden) {
-                    _isInterfaceHidden = true;
+                if (!InterfaceHidden) {
+                    ClearTextures();
+                    InterfaceHidden = true;
                 } else {
-                    _isInterfaceHidden = false;
+                    InterfaceHidden = false;
                 }
             };
             Log("Debug", "BlishHUD started successfully.");
+        }
+
+        //Clears the textures when the overlay is hidden.
+        private static void ClearTextures() {
+            if (_textures2D == null) return;
+
+            foreach (var tex in _textures2D) {
+                if (tex == null) continue;
+
+                using (var rtv = new RenderTargetView(_device, tex)) {
+                    var clearColor = new Color4(0, 0, 0, 0);
+                    _device.ImmediateContext.ClearRenderTargetView(rtv, clearColor);
+                }
+            }
         }
 
 
