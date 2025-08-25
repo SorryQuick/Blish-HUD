@@ -422,7 +422,7 @@ namespace Blish_HUD {
             if (currentRTs.Length > 0) {
                 originalRT = currentRTs[0].RenderTarget as RenderTarget2D;
             }
-            ctx.GraphicsDevice.SetRenderTarget(ExternalDirectxOverlay.RenderTarget);
+            
             
             if (_renderTimer.ElapsedMilliseconds > 1) {
                 Logger.Debug($"Render thread stalled for {_renderTimer.ElapsedMilliseconds} ms.");
@@ -435,6 +435,8 @@ namespace Blish_HUD {
             if (ExternalDirectxOverlay.Width != device.PresentationParameters.BackBufferWidth || ExternalDirectxOverlay.Height != device.PresentationParameters.BackBufferHeight) {
                 ExternalDirectxOverlay.ResizeTextures(device);
             }
+
+            ctx.GraphicsDevice.SetRenderTarget(ExternalDirectxOverlay.RenderTarget);
 
 
             ctx.GraphicsDevice.Clear(Color.Transparent);

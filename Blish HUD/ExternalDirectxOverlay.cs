@@ -85,17 +85,21 @@ namespace Blish_HUD {
         }
 
         public static void InitSharedTexture(GraphicsDevice device) {
-            var param = device.PresentationParameters;
-            Width = param.BackBufferWidth;
-            Height = param.BackBufferHeight;
-            
             initializeMMF();
 
             ResizeTextures(device);
         }
 
         public static void ResizeTextures(GraphicsDevice device) {
-            RenderTarget = new RenderTarget2D(
+            device.SetRenderTarget(null);
+
+            Width = device.PresentationParameters.BackBufferWidth;
+            Height = device.PresentationParameters.BackBufferHeight;
+
+            var oldRenderTarget = RenderTarget;
+            var oldTextures = _textures2D;
+
+            var newRenderTarget = new RenderTarget2D(
                 device,
                 Width,
                 Height,
@@ -103,7 +107,7 @@ namespace Blish_HUD {
                 SurfaceFormat.Color,
                 DepthFormat.None,
                 0,
-                RenderTargetUsage.PreserveContents
+                RenderTargetUsage.DiscardContents
             );
 
             var desc = new Texture2DDescription {
@@ -120,45 +124,51 @@ namespace Blish_HUD {
             };
             _device = (SharpDX.Direct3D11.Device)typeof(GraphicsDevice).GetField("_d3dDevice", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(device);
 
-            _textures2D = new Texture2D[] { new Texture2D(_device, desc), new Texture2D(_device, desc) };
+            var newTextures = new Texture2D[] { new Texture2D(_device, desc), new Texture2D(_device, desc) };
+            var newHandles = new IntPtr[newTextures.Length];
 
-            SharedTextureHandles = new IntPtr[_textures2D.Length];
-            for (int i = 0; i < _textures2D.Length; i++) {
-                SharpDX.DXGI.Resource dxgiResource = null;
-                try {
-                    dxgiResource = _textures2D[i].QueryInterface<SharpDX.DXGI.Resource>();
-                    SharedTextureHandles[i] = dxgiResource.SharedHandle;
-
-                    if (SharedTextureHandles[i] == IntPtr.Zero) {
-                        Log("debug", "QueryInterface succeeded but shared handle is NULL. Sharing not supported.");
-                    }
-                } catch (SharpDX.SharpDXException ex) {
-                    Log("debug", $"Failed to get shared handle. HRESULT: 0x{ex.ResultCode.Code:X8}", ex);
-                } finally {
-                    dxgiResource?.Dispose();
-                }
+            for (int i = 0; i < newTextures.Length; i++) {
+                using var dxgiResource = newTextures[i].QueryInterface<SharpDX.DXGI.Resource>();
+                newHandles[i] = dxgiResource.SharedHandle;
             }
 
             HeaderAccesor.Write(0, Width);
             HeaderAccesor.Write(4, Height);
             HeaderAccesor.Write(8, _textureIdx);
-            HeaderAccesor.Write(12, SharedTextureHandles[0].ToInt64());
-            HeaderAccesor.Write(20, SharedTextureHandles[1].ToInt64());
+            HeaderAccesor.Write(12, newHandles[0].ToInt64());
+            HeaderAccesor.Write(20, newHandles[1].ToInt64());
+
+            //Swap in new textures
+            RenderTarget = newRenderTarget;
+            _textures2D = newTextures;
+            SharedTextureHandles = newHandles;
+
+            // Dispose old stuff
+            oldRenderTarget?.Dispose();
+            if (oldTextures != null) {
+                foreach (var t in oldTextures) t?.Dispose();
+            }
         }
 
         public static void CopyToSharedTexture() {
+            if (RenderTarget == null || _textures2D == null) return;
+
             var backBufferTexture = (Texture2D) typeof(RenderTarget2D).GetField("_texture", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(RenderTarget);
-            _device.ImmediateContext.CopyResource(backBufferTexture, _textures2D[0]);
-            _device.ImmediateContext.Flush();
+
+            try {
+                if (backBufferTexture == null || backBufferTexture.IsDisposed || backBufferTexture.NativePointer == IntPtr.Zero) {
+                    return;
+                }
+            } catch {
+                return;
+            }
+
+            _device.ImmediateContext.CopyResource(backBufferTexture, _textures2D[_textureIdx]);
             FlipBufferIdx();
         }
 
         private static void FlipBufferIdx() {
-            if (_textureIdx == 0) {
-                _textureIdx = 1;
-            } else {
-                _textureIdx = 0;
-            }
+            _textureIdx ^= 1;
             HeaderAccesor.Write(8, _textureIdx);
         }
         
