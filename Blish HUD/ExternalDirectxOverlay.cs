@@ -41,8 +41,8 @@ namespace Blish_HUD {
 
         //Double buffer for synchronicity
         private static Texture2D[] _textures2D;
-        public static RenderTarget2D RenderTarget;
         private static SharpDX.Direct3D11.Device _device;
+        private static SwapChain _swapChain;
         public static IntPtr[] SharedTextureHandles;
 
         //Globals
@@ -97,7 +97,6 @@ namespace Blish_HUD {
             Width = device.PresentationParameters.BackBufferWidth;
             Height = device.PresentationParameters.BackBufferHeight;
 
-            var oldRenderTarget = RenderTarget;
             var oldTextures = _textures2D;
 
             var newRenderTarget = new RenderTarget2D(
@@ -125,6 +124,10 @@ namespace Blish_HUD {
             };
             _device = (SharpDX.Direct3D11.Device)typeof(GraphicsDevice).GetField("_d3dDevice", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(device);
 
+            _swapChain = (SwapChain)typeof(GraphicsDevice).GetField("_swapChain", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(device);
+
+            
+
             var newTextures = new Texture2D[] { new Texture2D(_device, desc), new Texture2D(_device, desc) };
             var newHandles = new IntPtr[newTextures.Length];
 
@@ -140,31 +143,29 @@ namespace Blish_HUD {
             HeaderAccesor.Write(20, newHandles[1].ToInt64());
 
             //Swap in new textures
-            RenderTarget = newRenderTarget;
             _textures2D = newTextures;
             SharedTextureHandles = newHandles;
 
             // Dispose old stuff
-            oldRenderTarget?.Dispose();
             if (oldTextures != null) {
                 foreach (var t in oldTextures) t?.Dispose();
             }
         }
 
         public static void CopyToSharedTexture() {
-            if (RenderTarget == null || _textures2D == null) return;
+            var texture = _swapChain.GetBackBuffer<Texture2D>(0);
 
-            var backBufferTexture = (Texture2D) typeof(RenderTarget2D).GetField("_texture", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(RenderTarget);
+            //Because the source texture is multisampled.
+            //Basically a copy.
+            _device.ImmediateContext.ResolveSubresource(
+                texture,
+                0,
+                _textures2D[_textureIdx],
+                0,
+                texture.Description.Format
+            );
 
-            try {
-                if (backBufferTexture == null || backBufferTexture.IsDisposed || backBufferTexture.NativePointer == IntPtr.Zero) {
-                    return;
-                }
-            } catch {
-                return;
-            }
-
-            _device.ImmediateContext.CopyResource(backBufferTexture, _textures2D[_textureIdx]);
+            _device.ImmediateContext.Flush();
             FlipBufferIdx();
         }
 

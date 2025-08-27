@@ -416,37 +416,24 @@ namespace Blish_HUD {
             _renderTimer.Restart();
 
             using GraphicsDeviceContext ctx = this.LendGraphicsDeviceContext();
-
-            RenderTarget2D originalRT = null;
-            if (!ExternalDirectxOverlay.InterfaceHidden) {
-                
-                var currentRTs = ctx.GraphicsDevice.GetRenderTargets();
-                if (currentRTs.Length > 0) {
-                    originalRT = currentRTs[0].RenderTarget as RenderTarget2D;
-                }
-            }
-            
             
             if (_renderTimer.ElapsedMilliseconds > 1) {
                 Logger.Debug($"Render thread stalled for {_renderTimer.ElapsedMilliseconds} ms.");
             }
             var device = ctx.GraphicsDevice;
-
-            if (!ExternalDirectxOverlay.InterfaceHidden) {
-                if (ExternalDirectxOverlay.SharedTextureHandles == null) {
-                    ExternalDirectxOverlay.InitSharedTexture(device);
-                }
-                if (ExternalDirectxOverlay.Width != device.PresentationParameters.BackBufferWidth || ExternalDirectxOverlay.Height != device.PresentationParameters.BackBufferHeight) {
-                    ExternalDirectxOverlay.ResizeTextures(device);
-                }
-                ctx.GraphicsDevice.SetRenderTarget(ExternalDirectxOverlay.RenderTarget);
+            
+            if (ExternalDirectxOverlay.SharedTextureHandles == null) {
+                ExternalDirectxOverlay.InitSharedTexture(device);
             }
-
+            if (ExternalDirectxOverlay.Width != device.PresentationParameters.BackBufferWidth || ExternalDirectxOverlay.Height != device.PresentationParameters.BackBufferHeight) {
+                ExternalDirectxOverlay.ResizeTextures(device);
+            }
 
             ctx.GraphicsDevice.Clear(Color.Transparent);
 
             // Skip rendering all elements when UI is hidden
-            if (GameService.Overlay.InterfaceHidden) return;
+            if (GameService.Overlay.InterfaceHidden)  return;
+            
 
             GameService.Debug.StartTimeFunc("3D objects");
             // Only draw 3D elements if we are in game and map is closed
@@ -477,9 +464,6 @@ namespace Blish_HUD {
             GameService.Debug.StopTimeFunc("Render Queue");
 
             ExternalDirectxOverlay.CopyToSharedTexture();
-            if (!ExternalDirectxOverlay.InterfaceHidden) {
-                ctx.GraphicsDevice.SetRenderTarget(originalRT);
-            }
         }
 
         protected override void Load() { /* NOOP */ }
