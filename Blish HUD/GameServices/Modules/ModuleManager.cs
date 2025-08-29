@@ -1,11 +1,12 @@
-﻿using System;
+﻿using Blish_HUD.Content;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using System.ComponentModel.Composition.Hosting;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
-using Blish_HUD.Content;
+using WineUnimplementedFunctions;
 
 namespace Blish_HUD.Modules {
 
@@ -156,7 +157,7 @@ namespace Blish_HUD.Modules {
             byte[] assemblyData = this.DataReader.GetFileBytes(assemblyPath);
             byte[] symbolData   = this.DataReader.GetFileBytes(symbolsPath) ?? new byte[0];
 
-            return Assembly.Load(assemblyData, symbolData);
+            return Assembly.Load(WineBlishModuleLoader.RedirectRefs(assemblyData), symbolData);
         }
 
         private Assembly GetResourceAssembly(Assembly requestingAssembly, AssemblyName resourceDetails, string assemblyPath) {
