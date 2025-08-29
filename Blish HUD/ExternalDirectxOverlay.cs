@@ -9,6 +9,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
 using System.IO.MemoryMappedFiles;
+using System.Linq.Expressions;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
@@ -92,63 +93,69 @@ namespace Blish_HUD {
         }
 
         public static void ResizeTextures(GraphicsDevice device) {
-            device.SetRenderTarget(null);
+            try { 
+                device.SetRenderTarget(null);
 
-            Width = device.PresentationParameters.BackBufferWidth;
-            Height = device.PresentationParameters.BackBufferHeight;
+                Width = device.PresentationParameters.BackBufferWidth;
+                Height = device.PresentationParameters.BackBufferHeight;
 
-            var oldTextures = _textures2D;
+                var oldTextures = _textures2D;
 
-            var newRenderTarget = new RenderTarget2D(
-                device,
-                Width,
-                Height,
-                false,
-                SurfaceFormat.Color,
-                DepthFormat.None,
-                0,
-                RenderTargetUsage.DiscardContents
-            );
+                var newRenderTarget = new RenderTarget2D(
+                    device,
+                    Width,
+                    Height,
+                    false,
+                    SurfaceFormat.Color,
+                    DepthFormat.None,
+                    0,
+                    RenderTargetUsage.DiscardContents
+                );
 
-            var desc = new Texture2DDescription {
-                Width = Width,
-                Height = Height,
-                MipLevels = 1,
-                ArraySize = 1,
-                Format = Format.R8G8B8A8_UNorm,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Default,
-                BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
-                CpuAccessFlags = CpuAccessFlags.None,
-                OptionFlags = ResourceOptionFlags.Shared
-            };
-            _device = (SharpDX.Direct3D11.Device)typeof(GraphicsDevice).GetField("_d3dDevice", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(device);
+                var desc = new Texture2DDescription {
+                    Width = Width,
+                    Height = Height,
+                    MipLevels = 1,
+                    ArraySize = 1,
+                    Format = Format.R8G8B8A8_UNorm,
+                    SampleDescription = new SampleDescription(1, 0),
+                    Usage = ResourceUsage.Default,
+                    BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
+                    CpuAccessFlags = CpuAccessFlags.None,
+                    OptionFlags = ResourceOptionFlags.Shared
+                };
+                _device = (SharpDX.Direct3D11.Device)typeof(GraphicsDevice).GetField("_d3dDevice", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(device);
 
-            _swapChain = (SwapChain)typeof(GraphicsDevice).GetField("_swapChain", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(device);
+                _swapChain = (SwapChain)typeof(GraphicsDevice).GetField("_swapChain", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(device);
 
-            
 
-            var newTextures = new Texture2D[] { new Texture2D(_device, desc), new Texture2D(_device, desc) };
-            var newHandles = new IntPtr[newTextures.Length];
 
-            for (int i = 0; i < newTextures.Length; i++) {
-                using var dxgiResource = newTextures[i].QueryInterface<SharpDX.DXGI.Resource>();
-                newHandles[i] = dxgiResource.SharedHandle;
-            }
+                var newTextures = new Texture2D[] { new Texture2D(_device, desc), new Texture2D(_device, desc) };
+                var newHandles = new IntPtr[newTextures.Length];
 
-            HeaderAccesor.Write(0, Width);
-            HeaderAccesor.Write(4, Height);
-            HeaderAccesor.Write(8, _textureIdx);
-            HeaderAccesor.Write(12, newHandles[0].ToInt64());
-            HeaderAccesor.Write(20, newHandles[1].ToInt64());
+                for (int i = 0; i < newTextures.Length; i++) {
+                    using var dxgiResource = newTextures[i].QueryInterface<SharpDX.DXGI.Resource>();
+                    newHandles[i] = dxgiResource.SharedHandle;
+                }
 
-            //Swap in new textures
-            _textures2D = newTextures;
-            SharedTextureHandles = newHandles;
+                HeaderAccesor.Write(0, Width);
+                HeaderAccesor.Write(4, Height);
+                HeaderAccesor.Write(8, _textureIdx);
+                HeaderAccesor.Write(12, newHandles[0].ToInt64());
+                HeaderAccesor.Write(20, newHandles[1].ToInt64());
 
-            // Dispose old stuff
-            if (oldTextures != null) {
-                foreach (var t in oldTextures) t?.Dispose();
+                //Swap in new textures
+                _textures2D = newTextures;
+                SharedTextureHandles = newHandles;
+
+                // Dispose old stuff
+                if (oldTextures != null) {
+                    foreach (var t in oldTextures) t?.Dispose();
+                }
+            } catch (Exception ex) {
+                Log("ERROR", "Could not create shared textures. If you are using DXVK, make sure you are using 1.10.1 or more recent. " +
+                    "If you are on MAC, try using DXVK over DXMT and such.", ex);
+                throw;
             }
         }
 
