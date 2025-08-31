@@ -120,15 +120,15 @@ namespace Blish_HUD {
                     Format = Format.R8G8B8A8_UNorm,
                     SampleDescription = new SampleDescription(1, 0),
                     Usage = ResourceUsage.Default,
-                    BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
+                    BindFlags = BindFlags.ShaderResource,
                     CpuAccessFlags = CpuAccessFlags.None,
-                    OptionFlags = ResourceOptionFlags.Shared
+                    OptionFlags = ResourceOptionFlags.SharedKeyedmutex
                 };
                 _device = (SharpDX.Direct3D11.Device)typeof(GraphicsDevice).GetField("_d3dDevice", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(device);
 
+                //LogDebugInfo();
+
                 _swapChain = (SwapChain)typeof(GraphicsDevice).GetField("_swapChain", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(device);
-
-
 
                 var newTextures = new Texture2D[] { new Texture2D(_device, desc), new Texture2D(_device, desc) };
                 var newHandles = new IntPtr[newTextures.Length];
@@ -159,6 +159,14 @@ namespace Blish_HUD {
             }
         }
 
+        private static void LogDebugInfo() {
+            var supportbgra = _device.CheckFormatSupport(Format.B8G8R8A8_UNorm);
+            var supportrbga = _device.CheckFormatSupport(Format.R8G8B8A8_UNorm);
+            Log("debug", $"BGRA support: {supportbgra}");
+            Log("debug", $"RGBA support: {supportrbga}");
+            Log("debug", "Feature Level (Upwards of minimum 40960 required): " + _device.FeatureLevel);
+        }
+
         public static void CopyToSharedTexture() {
             var texture = _swapChain.GetBackBuffer<Texture2D>(0);
 
@@ -169,7 +177,7 @@ namespace Blish_HUD {
                 0,
                 _textures2D[_textureIdx],
                 0,
-                texture.Description.Format
+                Format.R8G8B8A8_UNorm
             );
 
             _device.ImmediateContext.Flush();
