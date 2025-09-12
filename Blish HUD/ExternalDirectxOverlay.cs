@@ -120,7 +120,7 @@ namespace Blish_HUD {
                     Format = Format.R8G8B8A8_UNorm,
                     SampleDescription = new SampleDescription(1, 0),
                     Usage = ResourceUsage.Default,
-                    BindFlags = BindFlags.ShaderResource,
+                    BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget,
                     CpuAccessFlags = CpuAccessFlags.None,
                     OptionFlags = ResourceOptionFlags.SharedKeyedmutex
                 };
