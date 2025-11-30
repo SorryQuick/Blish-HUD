@@ -175,6 +175,17 @@ namespace Blish_HUD {
                 return (OverlayUpdateResponse.Errored, screenPoint.X == MINIMIZED_POS, errorCode);
             }
 
+            // =================================== Force width from dll since it's more accurate ================================
+
+            int currentWidth = clientRect.Right - clientRect.Left;
+            int currentHeight = clientRect.Bottom - clientRect.Top;
+            int forcedWidth = ExternalDirectxOverlay.Width > 0 ? ExternalDirectxOverlay.Width : currentWidth;
+            int forcedHeight = ExternalDirectxOverlay.Height > 0 ? ExternalDirectxOverlay.Height : currentHeight;
+            clientRect.Right = clientRect.Left + forcedWidth;
+            clientRect.Bottom = clientRect.Top + forcedHeight;
+
+            // ==================================================================================================================
+
             GameService.Debug.StartTimeFunc("GetForegroundWindow");
             var activeWindowHandle = GetForegroundWindow();
             GameService.Debug.StopTimeFunc("GetForegroundWindow");

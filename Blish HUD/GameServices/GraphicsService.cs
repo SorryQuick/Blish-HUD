@@ -421,13 +421,6 @@ namespace Blish_HUD {
                 Logger.Debug($"Render thread stalled for {_renderTimer.ElapsedMilliseconds} ms.");
             }
             var device = ctx.GraphicsDevice;
-            
-            if (ExternalDirectxOverlay.SharedTextureHandles == null) {
-                ExternalDirectxOverlay.InitSharedTexture(device);
-            }
-            if (ExternalDirectxOverlay.Width != device.PresentationParameters.BackBufferWidth || ExternalDirectxOverlay.Height != device.PresentationParameters.BackBufferHeight) {
-                ExternalDirectxOverlay.ResizeTextures(device);
-            }
 
             ctx.GraphicsDevice.Clear(Color.Transparent);
 
@@ -463,7 +456,7 @@ namespace Blish_HUD {
             }
             GameService.Debug.StopTimeFunc("Render Queue");
 
-            ExternalDirectxOverlay.CopyToSharedTexture();
+            ExternalDirectxOverlay.CopyToSharedTexture(device);
         }
 
         protected override void Load() { /* NOOP */ }

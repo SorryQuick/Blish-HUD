@@ -52,6 +52,12 @@ namespace Blish_HUD {
         //Mutex the rust side can use to check if Blish is still running.
         private static Mutex _isAliveMtx = new Mutex(true, "Global\\blish_isalive_mutex");
 
+        //Set by blish when a new frame is available, prevents having to sleep arbitrary amounts of time
+        private static EventWaitHandle _wakeEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "Global\\BlishHUD_WakeEvent");
+
+        //Sent by the dll when the game window has resized. Allows better accuracy in resolution
+        private static EventWaitHandle _resizeEvent = new EventWaitHandle(false, EventResetMode.ManualReset, "Global\\BlishHUD_ResizeEvent");
+
         //Because for some reason I can't make it work peroperly with GameService.Overlay.InterfaceHidden
         public static volatile bool InterfaceHidden = false;
 
@@ -86,25 +92,16 @@ namespace Blish_HUD {
             Console.WriteLine(logEntry);
         }
 
-        public static void InitSharedTexture(GraphicsDevice device) {
-            initializeMMF();
-
-            ResizeTextures(device);
-        }
-
-        public static void ResizeTextures(GraphicsDevice device) {
+        public static void ResizeTextures(GraphicsDevice device, int width, int height) {
             try { 
                 device.SetRenderTarget(null);
-
-                Width = device.PresentationParameters.BackBufferWidth;
-                Height = device.PresentationParameters.BackBufferHeight;
 
                 var oldTextures = _textures2D;
 
                 var newRenderTarget = new RenderTarget2D(
                     device,
-                    Width,
-                    Height,
+                    width,
+                    height,
                     false,
                     SurfaceFormat.Color,
                     DepthFormat.None,
@@ -113,8 +110,8 @@ namespace Blish_HUD {
                 );
 
                 var desc = new Texture2DDescription {
-                    Width = Width,
-                    Height = Height,
+                    Width = width,
+                    Height = height,
                     MipLevels = 1,
                     ArraySize = 1,
                     Format = Format.R8G8B8A8_UNorm,
@@ -138,8 +135,6 @@ namespace Blish_HUD {
                     newHandles[i] = dxgiResource.SharedHandle;
                 }
 
-                HeaderAccesor.Write(0, Width);
-                HeaderAccesor.Write(4, Height);
                 HeaderAccesor.Write(8, _textureIdx);
                 HeaderAccesor.Write(12, newHandles[0].ToInt64());
                 HeaderAccesor.Write(20, newHandles[1].ToInt64());
@@ -152,9 +147,11 @@ namespace Blish_HUD {
                 if (oldTextures != null) {
                     foreach (var t in oldTextures) t?.Dispose();
                 }
+                //Notify the dll
+                _wakeEvent.Set();
             } catch (Exception ex) {
                 Log("ERROR", "Could not create shared textures. If you are using DXVK, make sure you are using 1.10.1 or more recent. " +
-                    "If you are on MAC, try using DXVK over DXMT and such.", ex);
+                    "If you are on MAC, try release 0.7 on github instead.", ex);
                 throw;
             }
         }
@@ -167,26 +164,51 @@ namespace Blish_HUD {
             Log("debug", "Feature Level (Upwards of minimum 40960 required): " + _device.FeatureLevel);
         }
 
-        public static void CopyToSharedTexture() {
-            var texture = _swapChain.GetBackBuffer<Texture2D>(0);
+        public static void CopyToSharedTexture(GraphicsDevice device) {
+            if (HeaderAccesor == null) {
+                initializeMMF();
+            }
+            if (_resizeEvent.WaitOne(0)) {
+                uint w = 0;
+                uint h = 0;
+                HeaderAccesor.Read(0, out w);
+                HeaderAccesor.Read(4, out h);
+                Width = (int)w;
+                Height = (int)h;
+                if (w == 0 && h == 0) {
+                    return;
+                }
+                ResizeTextures(device, (int)w, (int)h);
+                _resizeEvent.Reset();
+            }
+            if (SharedTextureHandles != null) { 
+                try {
+                    var texture = _swapChain.GetBackBuffer<Texture2D>(0);
 
-            //Because the source texture is multisampled.
-            //Basically a copy.
-            _device.ImmediateContext.ResolveSubresource(
-                texture,
-                0,
-                _textures2D[_textureIdx],
-                0,
-                Format.R8G8B8A8_UNorm
-            );
+                    //Because the source texture is multisampled.
+                    //Basically a copy.
+                    _device.ImmediateContext.ResolveSubresource(
+                        texture,
+                        0,
+                        _textures2D[_textureIdx],
+                        0,
+                        Format.R8G8B8A8_UNorm
+                    );
 
-            _device.ImmediateContext.Flush();
-            FlipBufferIdx();
+                    _device.ImmediateContext.Flush();
+                    FlipBufferIdx();
+                } catch (Exception e) {
+                    Log("debug", $"Failed to copy textures");
+                }
+            }
         }
 
         private static void FlipBufferIdx() {
             _textureIdx ^= 1;
             HeaderAccesor.Write(8, _textureIdx);
+
+            //Notify the dll
+            _wakeEvent.Set();
         }
         
         private static void initializeMMF() {
@@ -201,6 +223,8 @@ namespace Blish_HUD {
                     InterfaceHidden = false;
                 }
             };
+            //Notify the dll we're ready
+            _wakeEvent.Set();
             Log("Debug", "BlishHUD started successfully.");
         }
 
